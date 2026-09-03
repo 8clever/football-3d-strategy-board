@@ -172,54 +172,277 @@ export function createGoal(isLeft: boolean): THREE.Group {
   return goal;
 }
 
-// Create ball canvas texture with classic football pattern
-export function createBallTexture(): THREE.CanvasTexture {
+// Caches for procedural soccer ball textures so calculation only executes once
+let cachedSoccerBallTextures: {
+  map: THREE.CanvasTexture;
+  bumpMap: THREE.CanvasTexture;
+} | null = null;
+
+// Mathematically accurate classic soccer ball textures (truncated icosahedron: 12 equal regular pentagons, 20 equal hexagons)
+export function getSoccerBallTextures(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
+  if (cachedSoccerBallTextures) {
+    return cachedSoccerBallTextures;
+  }
+
+  const phi = (1 + Math.sqrt(5)) / 2;
+  const L = Math.sqrt(1 + phi * phi);
+  const rawV = [
+    [-1, phi, 0], [1, phi, 0], [-1, -phi, 0], [1, -phi, 0],
+    [0, -1, phi], [0, 1, phi], [0, -1, -phi], [0, 1, -phi],
+    [phi, 0, -1], [phi, 0, 1], [-phi, 0, -1], [-phi, 0, 1]
+  ].map((v) => v.map((c) => c / L));
+
+  function normalize(v: number[]): number[] {
+    const len = Math.hypot(v[0], v[1], v[2]);
+    return [v[0] / len, v[1] / len, v[2] / len];
+  }
+  function dot(a: number[], b: number[]): number {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  }
+  function cross(a: number[], b: number[]): number[] {
+    return [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+  }
+
+  // Precomputed 12 vertices (centers of the 12 pentagons)
+  const Vx = new Float32Array(12);
+  const Vy = new Float32Array(12);
+  const Vz = new Float32Array(12);
+  for (let i = 0; i < 12; i++) {
+    Vx[i] = rawV[i][0];
+    Vy[i] = rawV[i][1];
+    Vz[i] = rawV[i][2];
+  }
+
+  // Precompute 60 edge planes (5 per pentagon x 12 pentagons)
+  const pentPlaneX = new Float32Array(60);
+  const pentPlaneY = new Float32Array(60);
+  const pentPlaneZ = new Float32Array(60);
+
+  for (let i = 0; i < 12; i++) {
+    const vi = rawV[i];
+    const ref = Math.abs(vi[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    const tx = normalize(cross(ref, vi));
+    const ty = cross(vi, tx);
+
+    const nbrs: { tij: number[]; ang: number }[] = [];
+    for (let j = 0; j < 12; j++) {
+      if (i === j) continue;
+      if (dot(vi, rawV[j]) > 0.4) {
+        const tij = normalize([2 * vi[0] + rawV[j][0], 2 * vi[1] + rawV[j][1], 2 * vi[2] + rawV[j][2]]);
+        const ang = Math.atan2(dot(tij, ty), dot(tij, tx));
+        nbrs.push({ tij, ang });
+      }
+    }
+    nbrs.sort((a, b) => a.ang - b.ang);
+
+    for (let k = 0; k < 5; k++) {
+      const c1 = nbrs[k].tij;
+      const c2 = nbrs[(k + 1) % 5].tij;
+      let n = normalize(cross(c1, c2));
+      if (dot(n, vi) < 0) n = [-n[0], -n[1], -n[2]];
+      const pIdx = i * 5 + k;
+      pentPlaneX[pIdx] = n[0];
+      pentPlaneY[pIdx] = n[1];
+      pentPlaneZ[pIdx] = n[2];
+    }
+  }
+
+  // Precompute 30 hexagon-hexagon boundary segments
+  const hexMidX = new Float32Array(30);
+  const hexMidY = new Float32Array(30);
+  const hexMidZ = new Float32Array(30);
+  const hexNormX = new Float32Array(30);
+  const hexNormY = new Float32Array(30);
+  const hexNormZ = new Float32Array(30);
+  const hexAx = new Float32Array(30);
+  const hexAy = new Float32Array(30);
+  const hexAz = new Float32Array(30);
+  const hexBx = new Float32Array(30);
+  const hexBy = new Float32Array(30);
+  const hexBz = new Float32Array(30);
+
+  let hexCount = 0;
+  for (let i = 0; i < 12; i++) {
+    for (let j = i + 1; j < 12; j++) {
+      if (dot(rawV[i], rawV[j]) > 0.4) {
+        const a = normalize([2 * rawV[i][0] + rawV[j][0], 2 * rawV[i][1] + rawV[j][1], 2 * rawV[i][2] + rawV[j][2]]);
+        const b = normalize([rawV[i][0] + 2 * rawV[j][0], rawV[i][1] + 2 * rawV[j][1], rawV[i][2] + 2 * rawV[j][2]]);
+        const n = normalize(cross(a, b));
+        const m = normalize([a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+
+        hexAx[hexCount] = a[0]; hexAy[hexCount] = a[1]; hexAz[hexCount] = a[2];
+        hexBx[hexCount] = b[0]; hexBy[hexCount] = b[1]; hexBz[hexCount] = b[2];
+        hexNormX[hexCount] = n[0]; hexNormY[hexCount] = n[1]; hexNormZ[hexCount] = n[2];
+        hexMidX[hexCount] = m[0]; hexMidY[hexCount] = m[1]; hexMidZ[hexCount] = m[2];
+        hexCount++;
+      }
+    }
+  }
+
+  const W = 1024;
+  const H = 512;
+
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 256;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d')!;
+  const imgData = ctx.createImageData(W, H);
+  const data = imgData.data;
 
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = W;
+  bumpCanvas.height = H;
+  const bumpCtx = bumpCanvas.getContext('2d')!;
+  const bumpImgData = bumpCtx.createImageData(W, H);
+  const bumpData = bumpImgData.data;
 
-  // Draw black pentagons/hexagons pattern
-  ctx.fillStyle = '#111827';
-  const pentagons = [
-    { x: 128, y: 64, r: 24 },
-    { x: 384, y: 64, r: 24 },
-    { x: 256, y: 128, r: 28 },
-    { x: 100, y: 192, r: 22 },
-    { x: 412, y: 192, r: 22 },
-  ];
-
-  for (const p of pentagons) {
-    ctx.beginPath();
-    for (let i = 0; i < 5; i++) {
-      const angle = (i * 2 * Math.PI) / 5 - Math.PI / 2;
-      const px = p.x + p.r * Math.cos(angle);
-      const py = p.y + p.r * Math.sin(angle);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.closePath();
-    ctx.fill();
+  // Precalculate trigonometry per row and column
+  const sinPhiArr = new Float32Array(H);
+  const cosPhiArr = new Float32Array(H);
+  for (let y = 0; y < H; y++) {
+    const v = 1 - (y + 0.5) / H;
+    const phi = (1 - v) * Math.PI;
+    sinPhiArr[y] = Math.sin(phi);
+    cosPhiArr[y] = Math.cos(phi);
   }
 
-  // Seam lines
-  ctx.strokeStyle = '#9ca3af';
-  ctx.lineWidth = 2;
-  for (const p of pentagons) {
-    for (let i = 0; i < 5; i++) {
-      const angle = (i * 2 * Math.PI) / 5 - Math.PI / 2;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(p.x + p.r * 1.6 * Math.cos(angle), p.y + p.r * 1.6 * Math.sin(angle));
-      ctx.stroke();
+  const sinThetaArr = new Float32Array(W);
+  const cosThetaArr = new Float32Array(W);
+  for (let x = 0; x < W; x++) {
+    const u = (x + 0.5) / W;
+    const theta = u * 2 * Math.PI;
+    sinThetaArr[x] = Math.sin(theta);
+    cosThetaArr[x] = Math.cos(theta);
+  }
+
+  const seamWidth = 0.015; // angular half-width of dark seam line
+  const seamSoftness = 0.008; // antialiasing transition band
+
+  for (let y = 0; y < H; y++) {
+    const sPhi = sinPhiArr[y];
+    const cPhi = cosPhiArr[y];
+    const rowOffset = y * W * 4;
+
+    for (let x = 0; x < W; x++) {
+      const sTheta = sinThetaArr[x];
+      const cTheta = cosThetaArr[x];
+
+      // Point on unit sphere corresponding to Three.js SphereGeometry UV mapping
+      const px = -sPhi * cTheta;
+      const py = cPhi;
+      const pz = sPhi * sTheta;
+
+      // Find closest pentagon center among 12 vertices
+      let maxDot = -2;
+      let closestPent = 0;
+      for (let i = 0; i < 12; i++) {
+        const d = px * Vx[i] + py * Vy[i] + pz * Vz[i];
+        if (d > maxDot) {
+          maxDot = d;
+          closestPent = i;
+        }
+      }
+
+      // Check distance to the 5 edge planes of closest pentagon
+      const basePlane = closestPent * 5;
+      let minPlaneDist = 999;
+      for (let k = 0; k < 5; k++) {
+        const pIdx = basePlane + k;
+        const dist = px * pentPlaneX[pIdx] + py * pentPlaneY[pIdx] + pz * pentPlaneZ[pIdx];
+        if (dist < minPlaneDist) minPlaneDist = dist;
+      }
+
+      const inPentagon = minPlaneDist >= 0;
+      let distToSeam = Math.abs(minPlaneDist);
+
+      // If outside pentagon, also check distance to nearby hex-hex boundaries
+      if (!inPentagon) {
+        for (let e = 0; e < 30; e++) {
+          const dMid = px * hexMidX[e] + py * hexMidY[e] + pz * hexMidZ[e];
+          if (dMid > 0.88) {
+            const dPlane = Math.abs(px * hexNormX[e] + py * hexNormY[e] + pz * hexNormZ[e]);
+            if (dPlane < distToSeam) {
+              const cAx = py * hexAz[e] - pz * hexAy[e];
+              const cAy = pz * hexAx[e] - px * hexAz[e];
+              const cAz = px * hexAy[e] - py * hexAx[e];
+              const signA = cAx * hexNormX[e] + cAy * hexNormY[e] + cAz * hexNormZ[e];
+
+              const cBx = hexBy[e] * pz - hexBz[e] * py;
+              const cBy = hexBz[e] * px - hexBx[e] * pz;
+              const cBz = hexBx[e] * py - hexBy[e] * px;
+              const signB = cBx * hexNormX[e] + cBy * hexNormY[e] + cAz * hexNormZ[e];
+
+              if (signA >= -0.015 && signB >= -0.015) {
+                distToSeam = dPlane;
+              }
+            }
+          }
+        }
+      }
+
+      // Smooth antialiasing for seam line
+      let seamFactor = 0;
+      if (distToSeam < seamWidth + seamSoftness) {
+        seamFactor = 1 - Math.min(1, Math.max(0, (distToSeam - seamWidth) / seamSoftness));
+      }
+
+      // Panel curvature height (for bump map: panels bulge slightly in center, dip at seams)
+      const bulgeHeight = Math.min(1.0, Math.max(0.12, distToSeam / 0.075));
+      const bumpVal = Math.round(bulgeHeight * 255);
+
+      const pIdx = rowOffset + x * 4;
+
+      if (inPentagon) {
+        // Black pentagon panel (#18181b leather with subtle seam shading)
+        const r = Math.round(24 * (1 - seamFactor) + 12 * seamFactor);
+        const g = Math.round(24 * (1 - seamFactor) + 14 * seamFactor);
+        const b = Math.round(27 * (1 - seamFactor) + 18 * seamFactor);
+        data[pIdx] = r;
+        data[pIdx + 1] = g;
+        data[pIdx + 2] = b;
+        data[pIdx + 3] = 255;
+      } else {
+        // White hexagon panel (#f8fafc clean football leather)
+        const r = Math.round(248 * (1 - seamFactor) + 40 * seamFactor);
+        const g = Math.round(250 * (1 - seamFactor) + 45 * seamFactor);
+        const b = Math.round(252 * (1 - seamFactor) + 55 * seamFactor);
+        data[pIdx] = r;
+        data[pIdx + 1] = g;
+        data[pIdx + 2] = b;
+        data[pIdx + 3] = 255;
+      }
+
+      bumpData[pIdx] = bumpVal;
+      bumpData[pIdx + 1] = bumpVal;
+      bumpData[pIdx + 2] = bumpVal;
+      bumpData[pIdx + 3] = 255;
     }
   }
+
+  ctx.putImageData(imgData, 0, 0);
+  bumpCtx.putImageData(bumpImgData, 0, 0);
 
   const texture = new THREE.CanvasTexture(canvas);
-  return texture;
+  texture.anisotropy = 8;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+
+  const bumpTexture = new THREE.CanvasTexture(bumpCanvas);
+  bumpTexture.anisotropy = 8;
+  bumpTexture.wrapS = THREE.RepeatWrapping;
+  bumpTexture.wrapT = THREE.ClampToEdgeWrapping;
+
+  cachedSoccerBallTextures = { map: texture, bumpMap: bumpTexture };
+  return cachedSoccerBallTextures;
+}
+
+// Create ball canvas texture with classic football pattern
+export function createBallTexture(): THREE.CanvasTexture {
+  return getSoccerBallTextures().map;
 }
 
 // Generate circular texture for player jersey number top badge
@@ -333,16 +556,20 @@ export function createBallMesh(ball: Ball): THREE.Group {
   group.userData = { type: 'ball' };
 
   const ballRadius = 0.7; // scaled for tactical clarity
-  const geom = new THREE.SphereGeometry(ballRadius, 32, 32);
-  const texture = createBallTexture();
+  const geom = new THREE.SphereGeometry(ballRadius, 64, 64);
+  const { map, bumpMap } = getSoccerBallTextures();
   const mat = new THREE.MeshStandardMaterial({
-    map: texture,
-    roughness: 0.35,
-    metalness: 0.1,
+    map,
+    bumpMap,
+    bumpScale: 0.035,
+    roughness: 0.32,
+    metalness: 0.05,
   });
 
   const sphere = new THREE.Mesh(geom, mat);
   sphere.position.y = ballRadius;
+  // Aesthetic tilt so a black pentagon and hexagonal panels face naturally forward
+  sphere.rotation.set(0.35, 0.4, 0.15);
   sphere.castShadow = true;
   group.add(sphere);
 
