@@ -1,0 +1,6 @@
+{
+  "name": "3D Football Tactical Board",
+  "description": "Interactive 3D tactical board for football coaches with player and ball management, camera presets, and strategy saving",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
