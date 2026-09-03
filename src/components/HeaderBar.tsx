@@ -53,8 +53,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       {/* Brand & Strategy Switcher */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2.5 pr-3 border-r border-slate-700/80">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-md shadow-emerald-950/40 text-white font-black text-lg tracking-wider">
-            ⚽
+          <div className="w-9 h-9 rounded-xl">
+            <img src="/favicon.svg" className="size-9" />
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-tight text-white leading-tight">
